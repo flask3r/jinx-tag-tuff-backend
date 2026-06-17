@@ -1,221 +1,182 @@
-import json
-import random
-import requests
+import flask
 from flask import Flask, jsonify, request
+import json
+import requests
+import os
+import random
 
 app = Flask(__name__)
 
+ValidTitleIds = {
+    "1EAF1"
+}
+ValidSecretKeys = {
+    "6Z7J4C4GMW81TKN4A45TM3XGZU61IJS93NOXP4IWQWG48TDKMU"
+}
 
-TITLE_ID = "1EAF1"
-SECRET_KEY = "6Z7J4C4GMW81TKN4A45TM3XGZU61IJS93NOXP4IWQWG48TDKMU"
-API_KEY = "OC|1101299303075069|be1560dc1831af51ccb26d6fad61126d"
+ValidOcTokens = {
+    "OC|1101299303075069|be1560dc1831af51ccb26d6fad61126d"
+}
 
-def get_auth_headers():
-    return {"Content-Type": "application/json", "X-SecretKey": SECRET_KEY}
-
-
-@app.route('/api/TD', methods=['POST'])
-def titled_data():
-    return jsonify({"MOTD":" Put your motd u want like (suck my dick and join the discord) "})
-
-@app.route("/api/PlayFabAuthentication", methods=["POST"])
-def playfab_authentication():
-    data = request.get_json()
-    oculus_id = data.get("OculusId", "Null")
-    nonce = data.get("Nonce", "Null")
-    platform = data.get("Platform", "Null")
-
-    login_req = requests.post(
-        url=f"https://{TITLE_ID}.playfabapi.com/Server/LoginWithServerCustomId",
-        json={
-            "ServerCustomId": f"OCULUS{oculus_id}",
-            "CreateAccount": True
-        },
-        headers=get_auth_headers()
+@app.route("/", methods=["GET", "POST"])
+def titledata():
+    if request.method == "GET":
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.", "BanExpirationTime": "Indefinite" }), 404
+    agent = request.headers.get("User-Agent")
+    if "UnityPlayer" not in agent:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.", "BanExpirationTime": "Indefinite" }), 404
+    r = requests.post(
+        url=f"https://{ValidTitleIds}.playfabapi.com/Server/GetTitleData",
+        headers={"X-SecretKey": ValidSecretKeys},
     )
 
-    if login_req.status_code == 200:
-        rjson = login_req.json().get('data', {})
-        session_ticket = rjson.get('SessionTicket')
-        playfab_id = rjson.get('PlayFabId')
-        entity = rjson.get('EntityToken', {})
-        entity_token = entity.get('EntityToken')
-        entity_id = entity.get('Entity', {}).get('Id')
-        entity_type = entity.get('Entity', {}).get('Type')
+def GetOrgScopedID(OculusId: str):
+    re = requests.get(
+        url=f"https://graph.oculus.com/{OculusId}?access_token={ValidOcTokens}&fields=org_scoped_id"
+    )
+    if re.status_code != 200:
+        orgscopedid = re.json().get("org_scoped_id")
+        return {"orgid": orgscopedid}
+    else:
+        print(re.json())
+    return {"orgid": "null"}
 
-        
-        requests.post(
-            url=f"https://{TITLE_ID}.playfabapi.com/Client/LinkCustomID",
-            json={"CustomID": f"OCULUS{oculus_id}", "ForceLink": True},
-            headers={
-                "content-type": "application/json",
-                "x-authorization": session_ticket
-            }
-        )
+def Nonce(user: str, nonce: str) -> bool:
+    for token in ValidOcTokens:
+        try:
+            response = requests.post(
+                url="https://graph.oculus.com/user_nonce_validate",
+                params={"nonce": nonce, "user_id": user, "access_token": token},
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("is_valid"):
+                    print(f"✅ Nonce valid | user {user}")
+                    return True
+        except requests.RequestException as e:
+            print(f"❌ Nonce Invalid | user {user}: {e}")
+            continue
+    return False
+
+
+def Meta(orgscope: str) -> bool:
+    for token in ValidOcTokens:
+        try:
+            response = requests.get(
+                url=f"https://graph.oculus.com/{orgscope}",
+                params={"access_token": token},
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("id") == orgscope:
+                    print(f"✅ OrgScope valid | user {orgscope}")
+                    return True
+        except requests.RequestException as e:
+            print(f"❌ OrgScope Invalid | user {orgscope}: {e}")
+            continue
+    return False
+
+
+
+@app.route("/api/PlayFabAuthentication", methods=['POST', 'GET'])
+def PlayFabAuthentication():
+    if request.method == "GET":
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+    data = request.get_json()
+    print(json.dumps(data, indent=2))
+
+    AppId = data.get("AppId", "null")
+    Nonce = data.get("Nonce", "null")
+    OculusId = data.get("OculusId", "null")
+    Platform = data.get("Platform", "null")
+    AppVersion = data.get("AppVersion", "null")
+
+    CustomId = f"OCULUS{GetOrgScopedID(OculusId).get('orgid')}"
+
+    agent = request.headers.get('User-Agent', '')
+    UnityVersion = request.headers.get("X-Unity-Version", '')
+    AcceptEncoding = request.headers.get("Accept-Encoding", "")
+
+    NewVersion : bool = False
+
+    ValidVersion = None
+    ValidAgent = None
+    if NewVersion:
+        ValidAgent = "UnityPlayer/2022.3.2f1 (UnityWebRequest/1.0, libcurl/7.84.0-DEV)"
+        ValidVersion = "2022.3.2f1"
+    else:
+        ValidAgent = "UnityPlayer/2019.3.15f1 (UnityWebRequest/1.0, libcurl/7.52.0-DEV)"
+        ValidVersion = "2019.3.15f1"
+
+    if AcceptEncoding != "deflate, gzip":
+        return "", 404
+
+    if agent != ValidAgent:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    if UnityVersion != ValidVersion:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    if not CustomId.startswith("OCULUS"):
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+    
+    if AppId not in ValidTitleIds:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+    
+    if Nonce == "null" or Nonce is None:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    if OculusId == "null" or OculusId is None:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    if Platform != "Quest" or Platform == "null":
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+    
+
+    NonceAuth: bool = Nonce(OculusId, Nonce)
+    if NonceAuth == False:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    MetaAuth: bool = Meta(OculusId)
+    if MetaAuth == False:
+        return jsonify({"BanMessage": "Your account has been traced and you have been banned.\n", "BanExpirationTime": "Indefinite" }), 403
+
+    AuthPost = requests.post(
+        url=f"https://{C7F4F}.playfabapi.com/Server/LoginWithServerCustomId",
+        json={
+            "ServerCustomId": CustomId,
+            "CreateAccount": True
+        })
+
+    if AuthPost.status_code == 200:
+        data = AuthPost.json().get("data", {})
+        SessionTicket = data.get("SessionTicket", 'not found')
+        PlayFabId = data.get("PlayFabId", 'not found')
+        EntityToken = data.get("EntityToken", {}).get("EntityToken","not found")
+        EntityId = data.get("EntityToken", {}).get("Entity", {}).get("Id")
+        EntityType = data.get("EntityToken", {}).get("Entity", {}).get("Type")
 
         return jsonify({
-            "PlayFabId": playfab_id,
-            "SessionTicket": session_ticket,
-            "EntityToken": entity_token,
-            "EntityId": entity_id,
-            "EntityType": entity_type,
-            "Nonce": nonce,
-            "OculusId": oculus_id,
-            "Platform": platform
+            "PlayFabId": PlayFabId,
+            "SessionTicket": SessionTicket,
+            "EntityId": EntityId,
+            "EntityType": EntityType,
+            "EntityToken": EntityToken
         }), 200
-    else:
-        ban_info = login_req.json()
-        if ban_info.get("errorCode") == 1002:
-            details = ban_info.get("errorDetails", {})
-            ban_reason = next(iter(details.keys()), "Banned")
-            ban_time = details.get(ban_reason, ["Indefinite"])[0]
-            return jsonify({
-                "BanMessage": ban_reason,
-                "BanExpirationTime": ban_time,
-            }), 403
-        return jsonify({"Message": "Login failed"}), 403
         
 
-@app.route("/api/CheckForBadName", methods=["POST"])
-def check_for_bad_name():
-    rjson = request.get_json().get("FunctionResult")
-    name = rjson.get("name").upper()
+    elif AuthPost.status_code == 403:
+        baninfo = AuthPost.json()
+        if baninfo.get('errorCode') == 1002:
+            details = baninfo.get('errorDetails', {})
+            reason = next(iter(details))
+            mmmm = details.get(next(iter(details.keys()), None), [None])[0]
 
-    if name in ["KKK", "PENIS", "NIGG", "NEG", "NIGA", "MONKEYSLAVE", "SLAVE", "FAG",
-        "NAGGI", "TRANNY", "QUEER", "KYS", "DICK", "PUSSY", "VAGINA", "BIGBLACKCOCK",
-        "DILDO", "HITLER", "KKX", "XKK", "NIGA", "NIGE", "NIG", "NI6", "PORN",
-        "JEW", "JAXX", "TTTPIG", "SEX", "COCK", "CUM", "FUCK", "PENIS", "DICK",
-        "ELLIOT", "JMAN", "K9", "NIGGA", "TTTPIG", "NICKER", "NICKA",
-        "REEL", "NII", "@here", "!", " ", "JMAN", "PPPTIG", "CLEANINGBOT", "JANITOR", "K9",
-        "H4PKY", "MOSA", "NIGGER", "NIGGA", "IHATENIGGERS", "@everyone", "TTT"]:
-        return jsonify({"result": 2})
-    else:
-        return jsonify({"result": 0})
+            return jsonify({
+                'BanMessage': reason,
+                'BanExpirationTime': mmmm
+            }), 403
 
-@app.route("/api/CachePlayFabId", methods=["POST"])
-def cache_playfab_id():
-    data = request.get_json()
-    session_ticket = data.get("SessionTicket")
-    if session_ticket:
-        playfab_id = session_ticket.split("-")[0]
-        return jsonify({"Message": "Authed", "PlayFabId": playfab_id}), 200
-    return jsonify({"Message": "Try Again Later."}), 404
-
-@app.route("/api/ConsumeOculusIAP", methods=["POST"])
-def consume_oculus_iap():
-    data = request.get_json()
-    access_token = data.get("userToken")
-    user_id = data.get("userID")
-    nonce = data.get("nonce")
-    sku = data.get("sku")
-
-    response = requests.post(
-        url=f"https://graph.oculus.com/consume_entitlement?nonce={nonce}&user_id={user_id}&sku={sku}&access_token={API_KEY}",
-        headers={"content-type": "application/json"}
-    )
-
-    if response.json().get("success"):
-        return jsonify({"result": True})
-    return jsonify({"error": True})
-
-
-@app.route("/api/photon", methods=["POST"])
-def photonauth():
-    AA = request.get_json()
-    PlayFabId = AA.get("PlayFabId")
-    OrgScopedID = AA.get("OrgScopedId")
-    CustomId = AA.get("CustomID")
-    Platform = AA.get("Platform")
-    Nonce = AA.get("Nonce")
-    UserId = AA.get("UserId")
-    MasterPlayer = AA.get("Master")
-    GorillaTagger = AA.get("GorillaTagger")
-    CosmeticsInRoom = AA.get("CosmeticsInRoom")
-    SharedGroupData = AA.get("SharedGroupData")
-    UpdatePlayerCosmetics = AA.get("UpdatePlayerCosmetics")
-    MasterClient = AA.get("MasterClient")
-    ItemIds = AA.get("ItemIds")
-    PlayerCount = AA.get("PlayerCount")
-    CosmeticAuthenticationV2 = AA.get("CosmeticAuthenticationV2")
-    RPCS = AA.get("RPCS")
-    BroadcastMyRoomV2 = AA.get("BroadcastMyRoomV2")
-    DLCOwnerShipV2 = AA.get("DLCOwnerShipV2")
-    GorillaCorpCurrencyV1 = AA.get("GorillaCorpCurrencyV1")
-    DeadMonke = AA.get("DeadMonke")
-    GhostCounter = AA.get("GhostCounter")
-    DirtyCosmeticSpawnnerV2 = AA.get("DirtyCosmeticSpawnnerV2")
-    RoomJoined = AA.get("RoomJoined")
-    VirtualStump = AA.get("VirtualStump")
-    PlayerRoomCount = AA.get("PlayerRoomCount")
-    AppVersion = AA.get("AppVersion")
-    AppId = AA.get("AppId")
-    TaggedDistance = AA.get("TaggedDistance")
-    TaggedClient = AA.get("TaggedClient")
-    OculusId = AA.get("OCULUSId")
-    TitleId = AA.get("TITLE_ID")
-
-    return jsonify({
-        "ResultCode": 1,
-        "StatusCode": 200,
-        "Message": "authed with photon",
-        "Result": 0,
-        "UserId": UserId,
-        "AppId": AppId,
-        "AppVersion": AppVersion,
-        "Ticket": AA.get("Ticket"),
-        "Token": AA.get("Token"),
-        "Nonce": Nonce,
-        "Platform": Platform,
-        "Username": AA.get("Username"),
-        "PlayerRoomCount": PlayerRoomCount,
-        "GorillaTagger": GorillaTagger,
-        "CosmeticAuthentication": CosmeticAuthenticationV2,
-        "CosmeticsInRoom": CosmeticsInRoom,
-        "UpdatePlayerCosmetics": UpdatePlayerCosmetics,
-        "DLCOwnerShip": DLCOwnerShipV2,
-        "Currency": GorillaCorpCurrencyV1,
-        "RoomJoined": RoomJoined,     
-        "VirtualStump": VirtualStump,
-        "DeadMonke": DeadMonke,
-        "GhostCounter": GhostCounter,
-        "BroadcastRoom": BroadcastMyRoomV2,
-        "TaggedClient": TaggedClient,
-        "TaggedDistance": TaggedDistance,
-        "RPCS": RPCS
-    }), 200
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
-
-
-@app.route("/", methods=["GET"])
-def main():
-    image_url = "https://imgs.search.brave.com/50ma5iuDOgB3FXoOqkmidyp8U88p3Y1MA-PnQBpyqio/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9iaWdz/dGFyYmlvLmNvbS93/cC1jb250ZW50L3Vw/bG9hZHMvMjAyMi8w/MS9Kb2UtQmFydG9s/b3p6aS5qcGc"
-    
-    return f"""
-    <html>
-      <head>
-        <title></title>
-        <style>
-          body {{
-            background-color: #111;
-            margin: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-          }}
-          img {{
-            max-width: 90vw;
-            max-height: 90vh;
-            border-radius: 12px;
-            box-shadow: 0 0 20px rgba(255,255,255,0.2);
-          }}
-        </style>
-      </head>
-      <body>
-        <img src="{image_url}" alt="Clean Image" />
-      </body>
-    </html>
-    """
+    return "uh"
